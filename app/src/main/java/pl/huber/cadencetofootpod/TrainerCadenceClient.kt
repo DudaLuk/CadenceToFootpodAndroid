@@ -14,10 +14,12 @@ import android.os.Looper
 import android.os.SystemClock
 
 /**
- * Odczyt kadencji ze smart trenażera.
+ * Odczyt telemetrii ze smart trenażera.
  * Preferuje FTMS / Indoor Bike Data (0x1826 / 0x2AD2), a jako fallback
- * korzysta z Cycling Power Measurement (0x1818 / 0x2A63), jeśli urządzenie
- * przekazuje tam dane obrotu korby.
+ * korzysta z Cycling Power Measurement (0x1818 / 0x2A63).
+ *
+ * Z FTMS odczytywane są kadencja i moc chwilowa. Cycling Power Measurement
+ * zawsze zawiera moc chwilową i opcjonalnie dane obrotu korby do wyliczenia kadencji.
  */
 class TrainerCadenceClient(
     private val context: Context,
@@ -26,6 +28,7 @@ class TrainerCadenceClient(
     interface Listener {
         fun onConnectionChanged(connected: Boolean, message: String)
         fun onCadenceChanged(rpm: Double)
+        fun onPowerChanged(watts: Int)
         fun onError(message: String)
     }
 
@@ -34,17 +37,26 @@ class TrainerCadenceClient(
     private var gatt: BluetoothGatt? = null
     private var protocol: Protocol? = null
     private var lastCadenceAt = 0L
+    private var lastPowerAt = 0L
     private var previousCrankRevolutions: Int? = null
     private var previousCrankEventTime: Int? = null
     private var smoothedRpm: Double? = null
+    private var lastPowerWatts: Int? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val zeroTimeout = object : Runnable {
         override fun run() {
-            if (lastCadenceAt > 0L && SystemClock.elapsedRealtime() - lastCadenceAt > 3_000L) {
+            val now = SystemClock.elapsedRealtime()
+            if (lastCadenceAt > 0L && now - lastCadenceAt > 3_000L) {
                 if ((smoothedRpm ?: 0.0) != 0.0) {
                     smoothedRpm = 0.0
                     listener.onCadenceChanged(0.0)
+                }
+            }
+            if (lastPowerAt > 0L && now - lastPowerAt > 3_000L) {
+                if ((lastPowerWatts ?: 0) != 0) {
+                    lastPowerWatts = 0
+                    listener.onPowerChanged(0)
                 }
             }
             handler.postDelayed(this, 500L)
@@ -79,9 +91,11 @@ class TrainerCadenceClient(
 
     private fun resetMeasurementState() {
         lastCadenceAt = 0L
+        lastPowerAt = 0L
         previousCrankRevolutions = null
         previousCrankEventTime = null
         smoothedRpm = null
+        lastPowerWatts = null
     }
 
     private val callback = object : BluetoothGattCallback() {
@@ -94,6 +108,7 @@ class TrainerCadenceClient(
                 listener.onConnectionChanged(false, "Trenażer rozłączony.")
                 resetMeasurementState()
                 listener.onCadenceChanged(0.0)
+                listener.onPowerChanged(-1)
             } else if (status != BluetoothGatt.GATT_SUCCESS) {
                 listener.onError("Błąd połączenia z trenażerem GATT: status=$status")
             }
@@ -112,7 +127,7 @@ class TrainerCadenceClient(
             if (indoorBikeData != null) {
                 protocol = Protocol.FTMS
                 if (enableNotifications(gatt, indoorBikeData)) {
-                    listener.onConnectionChanged(true, "KICKR/FTMS gotowy. Oczekiwanie na kadencję…")
+                    listener.onConnectionChanged(true, "KICKR/FTMS gotowy. Oczekiwanie na kadencję i moc…")
                 }
                 return
             }
@@ -123,7 +138,7 @@ class TrainerCadenceClient(
             if (cyclingPower != null) {
                 protocol = Protocol.CYCLING_POWER
                 if (enableNotifications(gatt, cyclingPower)) {
-                    listener.onConnectionChanged(true, "Cycling Power gotowy. Oczekiwanie na dane korby…")
+                    listener.onConnectionChanged(true, "Cycling Power gotowy. Oczekiwanie na moc i dane korby…")
                 }
                 return
             }
@@ -181,36 +196,58 @@ class TrainerCadenceClient(
     }
 
     /**
-     * FTMS Indoor Bike Data:
-     * flags uint16 LE. Gdy More Data (bit 0) == 0, Instantaneous Speed jest obecne.
-     * Instantaneous Cadence (bit 2) ma rozdzielczość 0.5 RPM.
+     * FTMS Indoor Bike Data (0x2AD2).
+     * Pola są obecne zgodnie z flagami i muszą być czytane w kolejności z FTMS.
+     * Instantaneous Cadence ma rozdzielczość 0.5 RPM, Instantaneous Power 1 W (sint16).
      */
     private fun handleIndoorBikeData(value: ByteArray) {
         if (value.size < 2) return
         val flags = uint16Le(value, 0)
         var offset = 2
 
-        val moreData = flags and 0x0001 != 0
-        if (!moreData) {
-            if (value.size < offset + 2) return
-            offset += 2 // Instantaneous Speed
-        }
-        if (flags and 0x0002 != 0) {
-            if (value.size < offset + 2) return
-            offset += 2 // Average Speed
+        fun skip(bytes: Int): Boolean {
+            if (value.size < offset + bytes) return false
+            offset += bytes
+            return true
         }
 
-        if (flags and 0x0004 != 0) {
+        // bit 0 = More Data. Gdy 0, Instantaneous Speed jest obecne.
+        if (flags and 0x0001 == 0 && !skip(2)) return
+        if (flags and 0x0002 != 0 && !skip(2)) return // Average Speed
+
+        if (flags and 0x0004 != 0) { // Instantaneous Cadence
             if (value.size < offset + 2) return
             val rpm = uint16Le(value, offset) / 2.0
+            offset += 2
             if (rpm in 0.0..250.0) emitCadence(rpm)
         }
+
+        if (flags and 0x0008 != 0 && !skip(2)) return // Average Cadence
+        if (flags and 0x0010 != 0 && !skip(3)) return // Total Distance (uint24)
+        if (flags and 0x0020 != 0 && !skip(2)) return // Resistance Level
+
+        if (flags and 0x0040 != 0) { // Instantaneous Power
+            if (value.size < offset + 2) return
+            val watts = int16Le(value, offset)
+            offset += 2
+            if (watts in -2000..5000) emitPower(watts.coerceAtLeast(0))
+        }
+
+        if (flags and 0x0080 != 0 && !skip(2)) return // Average Power
+        if (flags and 0x0100 != 0 && !skip(5)) return // Total Energy + Energy/h + Energy/min
+        if (flags and 0x0200 != 0 && !skip(1)) return // Heart Rate
+        if (flags and 0x0400 != 0 && !skip(1)) return // Metabolic Equivalent
+        if (flags and 0x0800 != 0 && !skip(2)) return // Elapsed Time
+        if (flags and 0x1000 != 0) skip(2) // Remaining Time
     }
 
-    /** Cycling Power Measurement fallback. */
+    /** Cycling Power Measurement fallback. Moc chwilowa jest zawsze pierwszym polem po flagach. */
     private fun handleCyclingPower(value: ByteArray) {
         if (value.size < 4) return
         val flags = uint16Le(value, 0)
+        val instantaneousPower = int16Le(value, 2)
+        if (instantaneousPower in -2000..5000) emitPower(instantaneousPower.coerceAtLeast(0))
+
         var offset = 4 // flags + instantaneous power
 
         if (flags and 0x0001 != 0) offset += 1 // Pedal Power Balance
@@ -249,8 +286,19 @@ class TrainerCadenceClient(
         listener.onCadenceChanged(rpm)
     }
 
+    private fun emitPower(watts: Int) {
+        lastPowerWatts = watts
+        lastPowerAt = SystemClock.elapsedRealtime()
+        listener.onPowerChanged(watts)
+    }
+
     private fun uint16Le(data: ByteArray, offset: Int): Int =
         (data[offset].toInt() and 0xFF) or ((data[offset + 1].toInt() and 0xFF) shl 8)
+
+    private fun int16Le(data: ByteArray, offset: Int): Int {
+        val raw = uint16Le(data, offset)
+        return if (raw and 0x8000 != 0) raw - 0x10000 else raw
+    }
 
     @SuppressLint("MissingPermission")
     private fun safeName(device: BluetoothDevice): String =

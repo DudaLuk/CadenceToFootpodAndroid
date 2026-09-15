@@ -1,14 +1,38 @@
-# CadenceToFootpodAndroid 0.3.0
+# CadenceToFootpodAndroid 0.4.0
 
 Android bridge dla MyWhoosh:
 
 1. odbiera kadencję z czujnika BLE CSC albo smart trenażera (KICKR / FTMS / Cycling Power),
-2. może wystawić tę kadencję jako BLE Running Speed and Cadence / Footpod (RSC 0x1814),
-3. wystawia kontroler OpenBikeControl po mDNS + TCP,
-4. automatycznie zmienia wirtualny bieg MyWhoosh na podstawie kadencji,
-5. ma osobną kartę **Rower** do sterowania AutoShift podczas jazdy.
+2. z trenażera KICKR / FTMS odczytuje również moc chwilową,
+3. może wystawić kadencję jako BLE Running Speed and Cadence / Footpod (RSC 0x1814),
+4. wystawia kontroler OpenBikeControl po mDNS + TCP,
+5. automatycznie zmienia wirtualny bieg MyWhoosh na podstawie kadencji,
+6. ma tryb **Power Target**, który dobiera przełożenia tak, aby dążyć do zadanej mocy i kadencji.
 
-## Karta Rower
+## Karty aplikacji
+
+### Połączenie
+
+Skanowanie i wybór źródła telemetrii, Footpod oraz OpenBikeControl.
+
+Obsługiwane źródła:
+
+- CSC `0x1816`,
+- FTMS `0x1826`,
+- Cycling Power `0x1818`,
+- urządzenia KICKR.
+
+Dla KICKR CORE 2 aplikacja preferuje FTMS / Indoor Bike Data `0x2AD2`.
+Z FTMS odczytywane są:
+
+- Instantaneous Cadence,
+- Instantaneous Power.
+
+Przy fallbacku Cycling Power Measurement `0x2A63` moc jest pobierana bezpośrednio z pola Instantaneous Power, a kadencja z opcjonalnych danych obrotu korby.
+
+### Rower
+
+Klasyczny AutoShift oparty o kadencję.
 
 Domyślnie:
 
@@ -20,36 +44,41 @@ Domyślnie:
 - gwałtowna zmiana: od `10 RPM` w oknie `1.5 s`,
 - szybka korekta: `1 bieg / 5 RPM`, maksymalnie `±5 biegów`.
 
-Na karcie znajdują się przyciski:
+### Moc
 
-- **Kadencja −1** – zmniejsza kadencję docelową o 1 RPM,
-- **Kadencja +1** – zwiększa kadencję docelową o 1 RPM,
-- **Bieg −1** – ręczny Shift Down,
-- **Bieg +1** – ręczny Shift Up,
-- przełącznik gwałtownej korekty,
-- przełącznik AutoShift.
+Nowy regulator **Power Target**.
 
-Przykład szybkiej korekty:
+Domyślne ustawienia:
 
-```text
-70 -> 96 RPM w około 1.5 s
-zmiana: +26 RPM
-26 / 5 = 5.2
-=> maksymalnie SHIFT UP x5
-```
+- moc docelowa: `200 W`,
+- histereza mocy: `±10 W`,
+- kadencja docelowa: `85 RPM`,
+- histereza kadencji: `±5 RPM`,
+- zwłoka przed zmianą: `2.0 s`,
+- cooldown: `4.0 s`.
 
-Analogicznie gwałtowny spadek kadencji powoduje serię Shift Down. Zmiany OpenBikeControl są wysyłane sekwencyjnie z krótkim odstępem, aby MyWhoosh nie zgubił kliknięć.
+Dostępne przyciski:
 
-## KICKR CORE 2
+- **Moc −5 W** / **Moc +5 W**,
+- **Kadencja −1** / **Kadencja +1**,
+- **Bieg −1** / **Bieg +1**,
+- **Target mocy WŁ./WYŁ.**.
 
-Przycisk **Skanuj czujnik / KICKR** wyszukuje:
+Regulator działa jako sprzężenie zwrotne:
 
-- CSC `0x1816`,
-- FTMS `0x1826`,
-- Cycling Power `0x1818`,
-- urządzenia o nazwie KICKR.
+- moc za niska -> preferuje cięższy bieg (`Shift Up`),
+- moc za wysoka -> preferuje lżejszy bieg (`Shift Down`),
+- kadencja za wysoka -> preferuje cięższy bieg,
+- kadencja za niska -> preferuje lżejszy bieg.
 
-Dla KICKR CORE 2 aplikacja preferuje FTMS / Indoor Bike Data `0x2AD2`. Jeśli FTMS nie udostępni kadencji, aplikacja próbuje Cycling Power Measurement.
+Jeżeli moc i kadencja wskazują ten sam kierunek, regulator zmienia bieg po zadanej zwłoce.
+Jeżeli wskazują kierunki przeciwne, automat nie zmienia biegu i czeka na zmianę wysiłku zawodnika. Zapobiega to oscylacji między dwoma biegami.
+
+Moc jest wygładzana filtrem wykładniczym, a regulator zmienia tylko jeden bieg naraz. Po zmianie obowiązuje cooldown, po którym wynik jest oceniany ponownie.
+
+> Power Target nie włącza trybu ERG w KICKR. Regulacja odbywa się przez wirtualne biegi OpenBikeControl w MyWhoosh. Dzięki temu profil trasy / tryb SIM pozostaje po stronie MyWhoosh.
+
+Tryby **AutoShift kadencji** i **Power Target** są wzajemnie wykluczające się — włączenie jednego wyłącza drugi.
 
 ## Footpod
 
@@ -68,16 +97,16 @@ Aplikacja reklamuje `_openbikecontrol._tcp` i wysyła:
 01 02 00  Shift Down released
 ```
 
-Przy szybkiej korekcie te pary są wysyłane kolejno, maksymalnie 5 razy.
+## Zalecany test 0.4.0
 
-## Zalecana kolejność testu 0.3.0
-
-1. Połącz KICKR / czujnik i potwierdź odczyt RPM.
-2. Uruchom OpenBikeControl i połącz go z MyWhoosh.
-3. Na karcie **Rower** sprawdź `Bieg −1` i `Bieg +1`.
-4. Ustaw np. `85 RPM`, histerezę `±5`.
-5. Włącz AutoShift.
-6. Dopiero po sprawdzeniu zwykłej regulacji włącz / pozostaw włączoną gwałtowną korektę.
+1. Połącz KICKR CORE 2 i rozpocznij pedałowanie.
+2. Sprawdź, czy karta **Moc** pokazuje aktualne `W` oraz `RPM`.
+3. Uruchom OpenBikeControl i połącz go z MyWhoosh.
+4. Sprawdź ręcznie `Bieg −1` i `Bieg +1`.
+5. Ustaw np. `150 W`, `85 RPM`, histerezę `±10 W / ±5 RPM`.
+6. Włącz **Target mocy**.
+7. Obserwuj status regulatora i log zmian biegów.
+8. Po potwierdzeniu działania stopniowo zawężaj histerezę lub skracaj cooldown.
 
 ## Wymagania
 
@@ -85,6 +114,7 @@ Przy szybkiej korekcie te pary są wysyłane kolejno, maksymalnie 5 razy.
 - BLE,
 - BLE advertising do funkcji Footpod,
 - Wi-Fi / sieć lokalna do OpenBikeControl,
+- KICKR / FTMS / Cycling Power dla trybu Power Target,
 - compileSdk 35,
 - targetSdk 35,
 - Java 17 / Kotlin.

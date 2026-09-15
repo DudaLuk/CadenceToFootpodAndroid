@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 - 2026-09-15
+
+- dodano trzecią kartę **Moc**,
+- dodano odczyt Instantaneous Power z FTMS Indoor Bike Data,
+- dodano odczyt Instantaneous Power z Cycling Power Measurement,
+- dodano nowy `PowerTargetEngine`,
+- regulator dąży jednocześnie do zadanej mocy i kadencji przez wirtualną zmianę przełożeń,
+- dodano regulowaną moc docelową i histerezę mocy,
+- dodano osobną kadencję docelową i histerezę dla trybu Power Target,
+- dodano przyciski **Moc −5 W / +5 W**, **Kadencja −1 / +1** i ręczne **Bieg −1 / +1**,
+- dodano wygładzanie mocy przed podejmowaniem decyzji,
+- regulator zmienia jeden bieg na cykl i ponownie ocenia moc po cooldownie,
+- przy konflikcie celu mocy i kadencji regulator czeka zamiast oscylować biegami,
+- tryby AutoShift kadencji i Power Target są wzajemnie wykluczające się,
+- podniesiono wersję aplikacji do 0.4.0.
+
 ## 0.3.0 - 2026-09-14
 
 - dodano dwie karty interfejsu: **Połączenie** i **Rower**,

@@ -33,12 +33,15 @@ class MainActivity : Activity(),
     TrainerCadenceClient.Listener,
     FootpodGattServer.Listener,
     OpenBikeControlServer.Listener,
-    AutoShiftEngine.Listener {
+    AutoShiftEngine.Listener,
+    PowerTargetEngine.Listener {
 
     companion object {
         private const val REQ_PERMISSIONS = 1001
         private const val REQ_ENABLE_BT = 1002
     }
+
+    private enum class AppTab { CONNECTION, BIKE, POWER }
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var scanner: CadenceSensorScanner
@@ -47,16 +50,21 @@ class MainActivity : Activity(),
     private lateinit var footpodServer: FootpodGattServer
     private lateinit var obcServer: OpenBikeControlServer
     private lateinit var autoShiftEngine: AutoShiftEngine
+    private lateinit var powerTargetEngine: PowerTargetEngine
 
     private lateinit var connectionContent: View
     private lateinit var bikeContent: View
+    private lateinit var powerContent: View
     private lateinit var connectionTabButton: Button
     private lateinit var bikeTabButton: Button
+    private lateinit var powerTabButton: Button
 
     private lateinit var permissionsText: TextView
     private lateinit var cadenceStatusText: TextView
     private lateinit var cadenceValueText: TextView
     private lateinit var bikeCadenceValueText: TextView
+    private lateinit var powerCurrentPowerText: TextView
+    private lateinit var powerCurrentCadenceText: TextView
     private lateinit var footpodStatusText: TextView
     private lateinit var footpodClientsText: TextView
     private lateinit var speedText: TextView
@@ -79,6 +87,18 @@ class MainActivity : Activity(),
     private lateinit var rapidCorrectionButton: Button
     private lateinit var autoShiftButton: Button
     private lateinit var autoShiftStatusText: TextView
+
+    private lateinit var powerTargetWattsEdit: EditText
+    private lateinit var powerHysteresisEdit: EditText
+    private lateinit var powerTargetCadenceEdit: EditText
+    private lateinit var powerCadenceHysteresisEdit: EditText
+    private lateinit var powerTriggerDelayEdit: EditText
+    private lateinit var powerCooldownEdit: EditText
+    private lateinit var powerTargetRangeText: TextView
+    private lateinit var powerTargetButton: Button
+    private lateinit var powerTargetStatusText: TextView
+    private lateinit var powerObcText: TextView
+
     private lateinit var logText: TextView
 
     private val foundDevices = mutableListOf<CadenceSensorScanner.FoundDevice>()
@@ -86,6 +106,9 @@ class MainActivity : Activity(),
     private lateinit var listAdapter: ArrayAdapter<String>
 
     private var currentCadence = 0.0
+    private var currentPowerWatts = 0
+    private var powerTelemetryAvailable = false
+    private var powerSourceSelected = false
     private var rapidCorrectionEnabled = true
     private val rpmFormat = DecimalFormat("0.0")
     private val speedFormat = DecimalFormat("0.00")
@@ -111,8 +134,10 @@ class MainActivity : Activity(),
         footpodServer = FootpodGattServer(this, bluetoothAdapter, this)
         obcServer = OpenBikeControlServer(this, this)
         autoShiftEngine = AutoShiftEngine(this)
+        powerTargetEngine = PowerTargetEngine(this)
 
         applyAutoShiftConfig(showToastOnError = false, writeLog = false)
+        applyPowerTargetConfig(showToastOnError = false, writeLog = false)
         refreshPermissionsState()
         requestMissingPermissions()
         ensureBluetoothEnabled()
@@ -125,12 +150,23 @@ class MainActivity : Activity(),
             when (found.type) {
                 CadenceSensorScanner.DeviceType.CSC -> {
                     trainerCadenceClient.disconnect()
+                    powerSourceSelected = false
+                    powerTelemetryAvailable = false
+                    currentPowerWatts = 0
+                    powerTargetEngine.onPowerUnavailable()
+                    if (powerTargetEngine.isEnabled()) {
+                        powerTargetEngine.setEnabled(false)
+                        refreshPowerTargetButton()
+                    }
                     cadenceClient.connect(found.device)
                 }
 
                 CadenceSensorScanner.DeviceType.FTMS,
                 CadenceSensorScanner.DeviceType.CYCLING_POWER -> {
                     cadenceClient.disconnect()
+                    powerSourceSelected = true
+                    powerTelemetryAvailable = false
+                    currentPowerWatts = 0
                     trainerCadenceClient.connect(found.device)
                 }
             }
@@ -159,15 +195,21 @@ class MainActivity : Activity(),
         connectionTabButton = Button(this).apply {
             text = "Połączenie"
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { showBikeTab(false) }
+            setOnClickListener { showTab(AppTab.CONNECTION) }
         }
         bikeTabButton = Button(this).apply {
             text = "Rower"
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setOnClickListener { showBikeTab(true) }
+            setOnClickListener { showTab(AppTab.BIKE) }
+        }
+        powerTabButton = Button(this).apply {
+            text = "Moc"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { showTab(AppTab.POWER) }
         }
         tabs.addView(connectionTabButton)
         tabs.addView(bikeTabButton)
+        tabs.addView(powerTabButton)
         root.addView(tabs)
 
         val frame = FrameLayout(this).apply {
@@ -180,12 +222,14 @@ class MainActivity : Activity(),
 
         connectionContent = buildConnectionTab()
         bikeContent = buildBikeTab()
+        powerContent = buildPowerTab()
         frame.addView(connectionContent)
         frame.addView(bikeContent)
+        frame.addView(powerContent)
         root.addView(frame)
 
         setContentView(root)
-        showBikeTab(false)
+        showTab(AppTab.CONNECTION)
     }
 
     private fun buildConnectionTab(): View {
@@ -281,7 +325,9 @@ class MainActivity : Activity(),
             setOnClickListener {
                 if (obcServer.isStarted()) {
                     autoShiftEngine.setEnabled(false)
+                    powerTargetEngine.setEnabled(false)
                     refreshAutoShiftButton()
+                    refreshPowerTargetButton()
                     obcServer.stop()
                     text = "Uruchom OpenBikeControl"
                 } else {
@@ -443,6 +489,10 @@ class MainActivity : Activity(),
                     if (!applyAutoShiftConfig(showToastOnError = true, writeLog = true)) {
                         return@setOnClickListener
                     }
+                    if (powerTargetEngine.isEnabled()) {
+                        powerTargetEngine.setEnabled(false)
+                        refreshPowerTargetButton()
+                    }
                     ensureObcStarted()
                 }
                 autoShiftEngine.setEnabled(enable)
@@ -458,11 +508,196 @@ class MainActivity : Activity(),
         return ScrollView(this).apply { addView(content) }
     }
 
-    private fun showBikeTab(showBike: Boolean) {
-        connectionContent.visibility = if (showBike) View.GONE else View.VISIBLE
-        bikeContent.visibility = if (showBike) View.VISIBLE else View.GONE
-        connectionTabButton.isEnabled = showBike
-        bikeTabButton.isEnabled = !showBike
+    private fun buildPowerTab(): View {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), 0, dp(4), dp(24))
+        }
+
+        addHeader(content, "Jazda na moc / Power Target")
+
+        val telemetryRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        powerCurrentPowerText = TextView(this).apply {
+            text = "— W"
+            textSize = 36f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        powerCurrentCadenceText = TextView(this).apply {
+            text = "0.0 RPM"
+            textSize = 30f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        telemetryRow.addView(powerCurrentPowerText)
+        telemetryRow.addView(powerCurrentCadenceText)
+        content.addView(telemetryRow)
+
+        content.addView(TextView(this).apply {
+            text = "aktualna moc                              aktualna kadencja"
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+
+        powerObcText = sectionText("MyWhoosh / OpenBikeControl: 0 klientów")
+        powerObcText.gravity = Gravity.CENTER_HORIZONTAL
+        content.addView(powerObcText)
+
+        addHeader(content, "Moc docelowa")
+        val powerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        powerRow.addView(TextView(this).apply { text = "Moc: " })
+        powerTargetWattsEdit = decimalEdit("200", 85)
+        powerRow.addView(powerTargetWattsEdit)
+        powerRow.addView(TextView(this).apply { text = " W    Histereza: ±" })
+        powerHysteresisEdit = decimalEdit("10", 65)
+        powerRow.addView(powerHysteresisEdit)
+        powerRow.addView(TextView(this).apply { text = " W" })
+        content.addView(powerRow)
+
+        val powerAdjustRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        powerAdjustRow.addView(Button(this).apply {
+            text = "Moc −5 W"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { adjustPowerTarget(-5.0) }
+        })
+        powerAdjustRow.addView(Button(this).apply {
+            text = "Moc +5 W"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { adjustPowerTarget(+5.0) }
+        })
+        content.addView(powerAdjustRow)
+
+        addHeader(content, "Kadencja docelowa")
+        val cadenceRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        cadenceRow.addView(TextView(this).apply { text = "Kadencja: " })
+        powerTargetCadenceEdit = decimalEdit("85", 80)
+        cadenceRow.addView(powerTargetCadenceEdit)
+        cadenceRow.addView(TextView(this).apply { text = " RPM    Histereza: ±" })
+        powerCadenceHysteresisEdit = decimalEdit("5", 65)
+        cadenceRow.addView(powerCadenceHysteresisEdit)
+        cadenceRow.addView(TextView(this).apply { text = " RPM" })
+        content.addView(cadenceRow)
+
+        val cadenceAdjustRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        cadenceAdjustRow.addView(Button(this).apply {
+            text = "Kadencja −1"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { adjustPowerCadenceTarget(-1.0) }
+        })
+        cadenceAdjustRow.addView(Button(this).apply {
+            text = "Kadencja +1"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { adjustPowerCadenceTarget(+1.0) }
+        })
+        content.addView(cadenceAdjustRow)
+
+        powerTargetRangeText = TextView(this).apply {
+            textSize = 15f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dp(8), 0, dp(6))
+        }
+        content.addView(powerTargetRangeText)
+        refreshPowerTargetRangeText()
+
+        addHeader(content, "Ręczna zmiana biegu")
+        val gearRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        gearRow.addView(Button(this).apply {
+            text = "Bieg −1"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { manualShift(AutoShiftEngine.Direction.DOWN) }
+        })
+        gearRow.addView(Button(this).apply {
+            text = "Bieg +1"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { manualShift(AutoShiftEngine.Direction.UP) }
+        })
+        content.addView(gearRow)
+
+        addHeader(content, "Zachowanie regulatora")
+        val timingRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        timingRow.addView(TextView(this).apply { text = "Zwłoka [s]: " })
+        powerTriggerDelayEdit = decimalEdit("2.0", 75)
+        timingRow.addView(powerTriggerDelayEdit)
+        timingRow.addView(TextView(this).apply { text = "   Cooldown [s]: " })
+        powerCooldownEdit = decimalEdit("4.0", 75)
+        timingRow.addView(powerCooldownEdit)
+        content.addView(timingRow)
+
+        content.addView(TextView(this).apply {
+            text = "Regulator zmienia jeden bieg naraz. Gdy błąd mocy i kadencji wskazują przeciwne kierunki, nie zmienia biegu i czeka na zmianę wysiłku."
+            textSize = 13f
+            setPadding(0, dp(6), 0, dp(6))
+        })
+
+        content.addView(Button(this).apply {
+            text = "Zastosuj ustawienia"
+            setOnClickListener {
+                applyPowerTargetConfig(showToastOnError = true, writeLog = true)
+            }
+        })
+
+        powerTargetButton = Button(this).apply {
+            text = "Target mocy: WYŁĄCZONY"
+            setOnClickListener {
+                val enable = !powerTargetEngine.isEnabled()
+                if (enable) {
+                    if (!powerSourceSelected) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Tryb mocy wymaga KICKR / FTMS / Cycling Power jako źródła danych.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@setOnClickListener
+                    }
+                    if (!applyPowerTargetConfig(showToastOnError = true, writeLog = true)) {
+                        return@setOnClickListener
+                    }
+                    if (autoShiftEngine.isEnabled()) {
+                        autoShiftEngine.setEnabled(false)
+                        refreshAutoShiftButton()
+                    }
+                    ensureObcStarted()
+                }
+                powerTargetEngine.setEnabled(enable)
+                refreshPowerTargetButton()
+            }
+        }
+        content.addView(powerTargetButton)
+
+        powerTargetStatusText = sectionText("Target mocy wyłączony")
+        powerTargetStatusText.gravity = Gravity.CENTER_HORIZONTAL
+        content.addView(powerTargetStatusText)
+
+        return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun showTab(tab: AppTab) {
+        connectionContent.visibility = if (tab == AppTab.CONNECTION) View.VISIBLE else View.GONE
+        bikeContent.visibility = if (tab == AppTab.BIKE) View.VISIBLE else View.GONE
+        powerContent.visibility = if (tab == AppTab.POWER) View.VISIBLE else View.GONE
+        connectionTabButton.isEnabled = tab != AppTab.CONNECTION
+        bikeTabButton.isEnabled = tab != AppTab.BIKE
+        powerTabButton.isEnabled = tab != AppTab.POWER
     }
 
     private fun addHeader(root: LinearLayout, textValue: String) {
@@ -619,10 +854,33 @@ class MainActivity : Activity(),
         currentCadence = rpm
         footpodServer.updateCadence(rpm)
         autoShiftEngine.onCadence(rpm)
+        if (powerTelemetryAvailable) {
+            powerTargetEngine.onTelemetry(currentPowerWatts.toDouble(), rpm)
+        }
         runOnUiThread {
             cadenceValueText.text = "Kadencja: ${rpmFormat.format(rpm)} RPM"
             bikeCadenceValueText.text = "${rpmFormat.format(rpm)} RPM"
+            powerCurrentCadenceText.text = "${rpmFormat.format(rpm)} RPM"
             updateCalculatedSpeed()
+        }
+    }
+
+    override fun onPowerChanged(watts: Int) {
+        if (watts < 0) {
+            powerTelemetryAvailable = false
+            currentPowerWatts = 0
+            powerTargetEngine.onPowerUnavailable()
+            runOnUiThread {
+                powerCurrentPowerText.text = "— W"
+            }
+            return
+        }
+
+        powerTelemetryAvailable = true
+        currentPowerWatts = watts
+        powerTargetEngine.onTelemetry(currentPowerWatts.toDouble(), currentCadence)
+        runOnUiThread {
+            powerCurrentPowerText.text = "$currentPowerWatts W"
         }
     }
 
@@ -657,6 +915,7 @@ class MainActivity : Activity(),
         runOnUiThread {
             obcClientsText.text = "Klienci OpenBikeControl: $count"
             bikeObcText.text = "MyWhoosh / OpenBikeControl: $count klient(ów)"
+            powerObcText.text = "MyWhoosh / OpenBikeControl: $count klient(ów)"
         }
     }
 
@@ -694,6 +953,31 @@ class MainActivity : Activity(),
         runOnUiThread { autoShiftStatusText.text = message }
     }
 
+    // Power Target callbacks
+    override fun onPowerTargetDecision(
+        direction: PowerTargetEngine.Direction,
+        powerWatts: Double,
+        cadenceRpm: Double,
+        reason: String
+    ) {
+        when (direction) {
+            PowerTargetEngine.Direction.UP -> obcServer.shiftUp(1)
+            PowerTargetEngine.Direction.DOWN -> obcServer.shiftDown(1)
+        }
+        runOnUiThread {
+            val label = if (direction == PowerTargetEngine.Direction.UP) "SHIFT UP" else "SHIFT DOWN"
+            appendLog(
+                "POWER: $label przy ${formatCompact(powerWatts)} W / ${rpmFormat.format(cadenceRpm)} RPM — $reason"
+            )
+        }
+    }
+
+    override fun onPowerTargetState(message: String) {
+        runOnUiThread {
+            if (::powerTargetStatusText.isInitialized) powerTargetStatusText.text = message
+        }
+    }
+
     private fun ensureObcStarted() {
         if (!obcServer.isStarted()) {
             obcServer.start()
@@ -708,6 +992,7 @@ class MainActivity : Activity(),
     private fun manualShift(direction: AutoShiftEngine.Direction) {
         ensureObcStarted()
         autoShiftEngine.registerManualShift()
+        powerTargetEngine.registerManualShift()
         when (direction) {
             AutoShiftEngine.Direction.UP -> obcServer.shiftUp(1)
             AutoShiftEngine.Direction.DOWN -> obcServer.shiftDown(1)
@@ -804,6 +1089,100 @@ class MainActivity : Activity(),
         }
     }
 
+    private fun adjustPowerTarget(delta: Double) {
+        val current = readDecimal(powerTargetWattsEdit, 200.0)
+        val updated = (current + delta).coerceIn(30.0, 2000.0)
+        powerTargetWattsEdit.setText(formatCompact(updated))
+        refreshPowerTargetRangeText()
+        if (::powerTargetEngine.isInitialized) {
+            applyPowerTargetConfig(showToastOnError = true, writeLog = false)
+        }
+    }
+
+    private fun adjustPowerCadenceTarget(delta: Double) {
+        val current = readDecimal(powerTargetCadenceEdit, 85.0)
+        val updated = (current + delta).coerceIn(30.0, 200.0)
+        powerTargetCadenceEdit.setText(formatCompact(updated))
+        refreshPowerTargetRangeText()
+        if (::powerTargetEngine.isInitialized) {
+            applyPowerTargetConfig(showToastOnError = true, writeLog = false)
+        }
+    }
+
+    private fun applyPowerTargetConfig(
+        showToastOnError: Boolean,
+        writeLog: Boolean
+    ): Boolean {
+        val targetPower = readDecimal(powerTargetWattsEdit, 200.0).coerceIn(30.0, 2000.0)
+        val powerHysteresis = readDecimal(powerHysteresisEdit, 10.0).coerceIn(2.0, 500.0)
+        val targetCadence = readDecimal(powerTargetCadenceEdit, 85.0).coerceIn(30.0, 200.0)
+        val cadenceHysteresis = readDecimal(powerCadenceHysteresisEdit, 5.0).coerceIn(0.5, 30.0)
+        val delaySeconds = readDecimal(powerTriggerDelayEdit, 2.0).coerceIn(0.5, 30.0)
+        val cooldownSeconds = readDecimal(powerCooldownEdit, 4.0).coerceIn(1.0, 60.0)
+
+        if (targetPower - powerHysteresis <= 0.0) {
+            if (showToastOnError) {
+                Toast.makeText(this, "Moc docelowa minus histereza musi być większa od zera.", Toast.LENGTH_LONG).show()
+            }
+            return false
+        }
+        if (targetCadence - cadenceHysteresis < 20.0) {
+            if (showToastOnError) {
+                Toast.makeText(this, "Kadencja docelowa minus histereza musi wynosić co najmniej 20 RPM.", Toast.LENGTH_LONG).show()
+            }
+            return false
+        }
+
+        powerTargetWattsEdit.setText(formatCompact(targetPower))
+        powerHysteresisEdit.setText(formatCompact(powerHysteresis))
+        powerTargetCadenceEdit.setText(formatCompact(targetCadence))
+        powerCadenceHysteresisEdit.setText(formatCompact(cadenceHysteresis))
+        powerTriggerDelayEdit.setText(formatCompact(delaySeconds))
+        powerCooldownEdit.setText(formatCompact(cooldownSeconds))
+        refreshPowerTargetRangeText()
+
+        powerTargetEngine.updateConfig(
+            PowerTargetEngine.Config(
+                targetPowerW = targetPower,
+                powerHysteresisW = powerHysteresis,
+                targetCadenceRpm = targetCadence,
+                cadenceHysteresisRpm = cadenceHysteresis,
+                triggerDelayMs = (delaySeconds * 1000.0).toLong(),
+                cooldownMs = (cooldownSeconds * 1000.0).toLong(),
+                minActiveCadenceRpm = 20.0,
+                powerSmoothingAlpha = 0.25
+            )
+        )
+
+        if (writeLog) {
+            appendLog(
+                "Target mocy: ${formatCompact(targetPower)} W ±${formatCompact(powerHysteresis)} W, " +
+                    "kadencja ${formatCompact(targetCadence)} RPM ±${formatCompact(cadenceHysteresis)}."
+            )
+        }
+        return true
+    }
+
+    private fun refreshPowerTargetRangeText() {
+        if (!::powerTargetRangeText.isInitialized) return
+        val targetPower = readDecimal(powerTargetWattsEdit, 200.0)
+        val powerHysteresis = readDecimal(powerHysteresisEdit, 10.0)
+        val targetCadence = readDecimal(powerTargetCadenceEdit, 85.0)
+        val cadenceHysteresis = readDecimal(powerCadenceHysteresisEdit, 5.0)
+        powerTargetRangeText.text =
+            "Cel: ${formatCompact(targetPower)} W (${formatCompact((targetPower - powerHysteresis).coerceAtLeast(0.0))}–${formatCompact(targetPower + powerHysteresis)} W)  •  " +
+                "${formatCompact(targetCadence)} RPM (${formatCompact((targetCadence - cadenceHysteresis).coerceAtLeast(0.0))}–${formatCompact(targetCadence + cadenceHysteresis)} RPM)"
+    }
+
+    private fun refreshPowerTargetButton() {
+        if (!::powerTargetButton.isInitialized) return
+        powerTargetButton.text = if (powerTargetEngine.isEnabled()) {
+            "Target mocy: WŁĄCZONY"
+        } else {
+            "Target mocy: WYŁĄCZONY"
+        }
+    }
+
     private fun readMetersPerRevolution(): Double {
         val value = readDecimal(metersPerRevEdit, 2.0).coerceIn(0.1, 10.0)
         footpodServer.setMetersPerRevolution(value)
@@ -840,6 +1219,7 @@ class MainActivity : Activity(),
 
     override fun onDestroy() {
         if (::autoShiftEngine.isInitialized) autoShiftEngine.setEnabled(false)
+        if (::powerTargetEngine.isInitialized) powerTargetEngine.setEnabled(false)
         if (::obcServer.isInitialized) obcServer.stop()
         if (::scanner.isInitialized) scanner.stop()
         if (::cadenceClient.isInitialized) cadenceClient.close()

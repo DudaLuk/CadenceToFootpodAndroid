@@ -38,7 +38,8 @@ class MainActivity : Activity(),
     FootpodGattServer.Listener,
     OpenBikeControlServer.Listener,
     AutoShiftEngine.Listener,
-    PowerTargetEngine.Listener {
+    PowerTargetEngine.Listener,
+    ZwiftClickV2Controller.Listener {
 
     companion object {
         private const val REQ_PERMISSIONS = 1001
@@ -56,6 +57,8 @@ class MainActivity : Activity(),
     private lateinit var autoShiftEngine: AutoShiftEngine
     private lateinit var powerTargetEngine: PowerTargetEngine
     private lateinit var controllerKeyMapper: ControllerKeyMapper
+    private lateinit var zwiftClickV2Mapper: ZwiftClickV2Mapper
+    private lateinit var zwiftClickV2Controller: ZwiftClickV2Controller
 
     private lateinit var connectionContent: View
     private lateinit var bikeContent: View
@@ -111,6 +114,8 @@ class MainActivity : Activity(),
     private lateinit var controllerShiftUpText: TextView
     private lateinit var controllerShiftDownText: TextView
     private lateinit var controllerLastKeyText: TextView
+    private lateinit var zwiftClickV2StatusText: TextView
+    private lateinit var zwiftClickV2DeviceText: TextView
 
     private lateinit var logText: TextView
 
@@ -139,6 +144,8 @@ class MainActivity : Activity(),
         }
         bluetoothAdapter = adapter
         controllerKeyMapper = ControllerKeyMapper(this)
+        zwiftClickV2Mapper = ZwiftClickV2Mapper(this)
+        zwiftClickV2Controller = ZwiftClickV2Controller(this, bluetoothAdapter, this)
 
         buildUi()
 
@@ -727,7 +734,57 @@ class MainActivity : Activity(),
             setPadding(dp(4), 0, dp(4), dp(24))
         }
 
-        addHeader(content, "Kontroler Bluetooth")
+        addHeader(content, "Zwift Click V2")
+        content.addView(TextView(this).apply {
+            text = "Bezpośrednie połączenie BLE z prawym Zwift Click V2. Nie trzeba parować go w ustawieniach Androida. Wybudź Click naciśnięciem przycisku, a następnie użyj przycisku poniżej. Domyślnie + = Bieg +1, B = Bieg −1."
+            textSize = 14f
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        zwiftClickV2StatusText = sectionText("Click V2: rozłączony")
+        zwiftClickV2StatusText.gravity = Gravity.CENTER_HORIZONTAL
+        content.addView(zwiftClickV2StatusText)
+
+        zwiftClickV2DeviceText = TextView(this).apply {
+            text = "Urządzenie: —"
+            textSize = 14f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dp(2), 0, dp(8))
+        }
+        content.addView(zwiftClickV2DeviceText)
+
+        val clickRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        clickRow.addView(Button(this).apply {
+            text = "Znajdź i połącz Click V2"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                if (!prepareBluetoothOperation()) return@setOnClickListener
+                zwiftClickV2DeviceText.text = "Urządzenie: szukanie prawego Click V2…"
+                zwiftClickV2Controller.startScan()
+            }
+        })
+        clickRow.addView(Button(this).apply {
+            text = "Rozłącz Click V2"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                zwiftClickV2Controller.disconnect()
+                zwiftClickV2StatusText.text = "Click V2: rozłączony"
+                zwiftClickV2DeviceText.text = "Urządzenie: —"
+                appendLog("ZWIFT CLICK V2: rozłączono.")
+            }
+        })
+        content.addView(clickRow)
+
+        content.addView(TextView(this).apply {
+            text = "Tryb Click V2 jest przeznaczony dla prawego kontrolera. Lewy Click V2 korzysta z mechanizmu odblokowania Zwift i nie jest używany w tym trybie."
+            textSize = 12f
+            setPadding(0, dp(4), 0, dp(8))
+        })
+
+        addHeader(content, "Zwykły pilot Bluetooth HID")
         content.addView(TextView(this).apply {
             text = "Obsługiwane są piloty i kontrolery, które Android widzi jako urządzenie HID: klawiaturę, gamepad, D-pad albo pilot multimedialny. Najpierw sparuj urządzenie w ustawieniach Bluetooth, a potem naucz aplikację dwóch przycisków."
             textSize = 14f
@@ -735,7 +792,7 @@ class MainActivity : Activity(),
         })
 
         content.addView(Button(this).apply {
-            text = "Otwórz ustawienia Bluetooth / sparuj pilot"
+            text = "Otwórz ustawienia Bluetooth / sparuj pilot HID"
             setOnClickListener {
                 val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
                 if (intent.resolveActivity(packageManager) != null) {
@@ -746,16 +803,21 @@ class MainActivity : Activity(),
             }
         })
 
-        controllerDevicesText = sectionText("Aktywne kontrolery: sprawdzanie…")
+        controllerDevicesText = sectionText("Aktywne kontrolery HID: sprawdzanie…")
         content.addView(controllerDevicesText)
         content.addView(Button(this).apply {
-            text = "Odśwież listę kontrolerów"
+            text = "Odśwież listę kontrolerów HID"
             setOnClickListener { refreshControllerDevices() }
         })
 
         addHeader(content, "Mapowanie przycisków")
-        controllerShiftUpText = sectionText("Bieg +1: nieprzypisany")
-        controllerShiftDownText = sectionText("Bieg −1: nieprzypisany")
+        content.addView(TextView(this).apply {
+            text = "Przycisk Naucz działa dla obu typów urządzeń. Po jego wciśnięciu naciśnij przycisk na sparowanym pilocie HID albo na połączonym Zwift Click V2."
+            textSize = 13f
+            setPadding(0, 0, 0, dp(6))
+        })
+        controllerShiftUpText = sectionText("Bieg +1: —")
+        controllerShiftDownText = sectionText("Bieg −1: —")
         content.addView(controllerShiftUpText)
         content.addView(controllerShiftDownText)
 
@@ -791,18 +853,20 @@ class MainActivity : Activity(),
             text = "Anuluj naukę"
             setOnClickListener {
                 controllerKeyMapper.cancelLearning()
+                zwiftClickV2Mapper.cancelLearning()
                 controllerStatusText.text = "Kontroler: gotowy"
                 controllerLastKeyText.text = "Ostatni przycisk: —"
             }
         })
 
         content.addView(Button(this).apply {
-            text = "Usuń mapowanie przycisków"
+            text = "Usuń mapowanie HID / przywróć Click V2 (+ / B)"
             setOnClickListener {
                 controllerKeyMapper.clearMappings()
+                zwiftClickV2Mapper.resetDefaults()
                 refreshControllerMappings()
-                controllerStatusText.text = "Kontroler: mapowanie usunięte"
-                appendLog("KONTROLER: usunięto mapowanie przycisków.")
+                controllerStatusText.text = "Kontroler: przywrócono mapowanie domyślne Click V2"
+                appendLog("KONTROLER: usunięto mapowanie HID i przywrócono Click V2: + / B.")
             }
         })
 
@@ -820,17 +884,20 @@ class MainActivity : Activity(),
 
     private fun beginControllerLearning(action: ControllerKeyMapper.Action) {
         controllerKeyMapper.beginLearning(action)
+        zwiftClickV2Mapper.beginLearning(action)
         val label = if (action == ControllerKeyMapper.Action.SHIFT_UP) "Bieg +1" else "Bieg −1"
-        controllerStatusText.text = "Nauka: naciśnij na pilocie przycisk dla $label"
+        controllerStatusText.text = "Nauka: naciśnij przycisk HID albo Click V2 dla $label"
         controllerLastKeyText.text = "Oczekiwanie na przycisk…"
     }
 
     private fun refreshControllerMappings() {
         if (!::controllerShiftUpText.isInitialized) return
-        val up = controllerKeyMapper.getMapping(ControllerKeyMapper.Action.SHIFT_UP)
-        val down = controllerKeyMapper.getMapping(ControllerKeyMapper.Action.SHIFT_DOWN)
-        controllerShiftUpText.text = "Bieg +1: ${up?.displayLabel() ?: "nieprzypisany"}"
-        controllerShiftDownText.text = "Bieg −1: ${down?.displayLabel() ?: "nieprzypisany"}"
+        val hidUp = controllerKeyMapper.getMapping(ControllerKeyMapper.Action.SHIFT_UP)
+        val hidDown = controllerKeyMapper.getMapping(ControllerKeyMapper.Action.SHIFT_DOWN)
+        val clickUp = zwiftClickV2Mapper.getMapping(ControllerKeyMapper.Action.SHIFT_UP)
+        val clickDown = zwiftClickV2Mapper.getMapping(ControllerKeyMapper.Action.SHIFT_DOWN)
+        controllerShiftUpText.text = "Bieg +1:\n• HID: ${hidUp?.displayLabel() ?: "nieprzypisany"}\n• Click V2: ${clickUp?.label ?: "nieprzypisany"}"
+        controllerShiftDownText.text = "Bieg −1:\n• HID: ${hidDown?.displayLabel() ?: "nieprzypisany"}\n• Click V2: ${clickDown?.label ?: "nieprzypisany"}"
     }
 
     private fun refreshControllerDevices() {
@@ -851,9 +918,9 @@ class MainActivity : Activity(),
             .distinctBy { it.descriptor }
 
         controllerDevicesText.text = if (devices.isEmpty()) {
-            "Aktywne kontrolery: brak. Sparuj pilot w Bluetooth i naciśnij na nim dowolny przycisk."
+            "Aktywne kontrolery HID: brak. Sparuj pilot w Bluetooth i naciśnij na nim dowolny przycisk."
         } else {
-            "Aktywne kontrolery (${devices.size}):\n" + devices.joinToString("\n") { "• ${it.name}" }
+            "Aktywne kontrolery HID (${devices.size}):\n" + devices.joinToString("\n") { "• ${it.name}" }
         }
     }
 
@@ -1403,7 +1470,8 @@ class MainActivity : Activity(),
                         refreshControllerMappings()
                         refreshControllerDevices()
                     }
-                    appendLog("KONTROLER: ${result.mapping.displayLabel()} przypisano do $label.")
+                    if (::zwiftClickV2Mapper.isInitialized) zwiftClickV2Mapper.cancelLearning()
+                    appendLog("KONTROLER HID: ${result.mapping.displayLabel()} przypisano do $label.")
                     return true
                 }
 
@@ -1429,6 +1497,83 @@ class MainActivity : Activity(),
         return super.dispatchKeyEvent(event)
     }
 
+    override fun onZwiftClickV2ScanStarted() {
+        runOnUiThread {
+            if (::zwiftClickV2StatusText.isInitialized) {
+                zwiftClickV2StatusText.text = "Click V2: skanowanie…"
+            }
+            appendLog("ZWIFT CLICK V2: rozpoczęto skanowanie prawego kontrolera.")
+        }
+    }
+
+    override fun onZwiftClickV2DeviceFound(device: BluetoothDevice, displayName: String, rssi: Int) {
+        runOnUiThread {
+            if (::zwiftClickV2DeviceText.isInitialized) {
+                zwiftClickV2DeviceText.text = "Urządzenie: $displayName • RSSI $rssi dBm"
+            }
+            appendLog("ZWIFT CLICK V2: znaleziono $displayName (RSSI $rssi dBm).")
+        }
+    }
+
+    override fun onZwiftClickV2ScanStopped() {
+        runOnUiThread {
+            if (::zwiftClickV2StatusText.isInitialized && zwiftClickV2StatusText.text.toString().contains("skanowanie")) {
+                zwiftClickV2StatusText.text = "Click V2: skanowanie zakończone"
+            }
+        }
+    }
+
+    override fun onZwiftClickV2ConnectionState(message: String, connected: Boolean) {
+        runOnUiThread {
+            if (::zwiftClickV2StatusText.isInitialized) {
+                zwiftClickV2StatusText.text = message
+            }
+            appendLog("ZWIFT CLICK V2: $message")
+        }
+    }
+
+    override fun onZwiftClickV2Button(button: ZwiftClickV2Controller.Button) {
+        runOnUiThread {
+            val result = zwiftClickV2Mapper.handle(button)
+            when (result) {
+                is ZwiftClickV2Mapper.HandleResult.Learned -> {
+                    controllerKeyMapper.cancelLearning()
+                    val label = if (result.action == ControllerKeyMapper.Action.SHIFT_UP) "Bieg +1" else "Bieg −1"
+                    controllerStatusText.text = "Kontroler: zapisano $label"
+                    controllerLastKeyText.text = "Ostatni przycisk: Click V2 ${button.label} → $label"
+                    refreshControllerMappings()
+                    appendLog("ZWIFT CLICK V2: ${button.label} przypisano do $label.")
+                }
+
+                is ZwiftClickV2Mapper.HandleResult.Triggered -> {
+                    val direction = if (result.action == ControllerKeyMapper.Action.SHIFT_UP) {
+                        AutoShiftEngine.Direction.UP
+                    } else {
+                        AutoShiftEngine.Direction.DOWN
+                    }
+                    val label = if (result.action == ControllerKeyMapper.Action.SHIFT_UP) "Bieg +1" else "Bieg −1"
+                    controllerStatusText.text = "Kontroler: aktywny"
+                    controllerLastKeyText.text = "Ostatni przycisk: Click V2 ${button.label} → $label"
+                    manualShift(direction, source = "ZWIFT CLICK V2")
+                }
+
+                null -> {
+                    if (::controllerLastKeyText.isInitialized) {
+                        controllerLastKeyText.text = "Ostatni przycisk: Click V2 ${button.label} (bez akcji)"
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onZwiftClickV2Error(message: String) {
+        runOnUiThread {
+            if (::zwiftClickV2StatusText.isInitialized) zwiftClickV2StatusText.text = message
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            appendLog("ZWIFT CLICK V2 ERROR: $message")
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         if (::controllerDevicesText.isInitialized) refreshControllerDevices()
@@ -1442,6 +1587,7 @@ class MainActivity : Activity(),
         if (::cadenceClient.isInitialized) cadenceClient.close()
         if (::trainerCadenceClient.isInitialized) trainerCadenceClient.close()
         if (::footpodServer.isInitialized) footpodServer.stop()
+        if (::zwiftClickV2Controller.isInitialized) zwiftClickV2Controller.close()
         super.onDestroy()
     }
 }

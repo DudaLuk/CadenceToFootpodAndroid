@@ -137,3 +137,15 @@ Aplikacja reklamuje `_openbikecontrol._tcp` i wysyła:
 - compileSdk 35,
 - targetSdk 35,
 - Java 17 / Kotlin.
+## Zwift Click V2
+
+Karta **Kontroler** obsługuje teraz dwa rodzaje urządzeń:
+
+- zwykłe piloty Bluetooth HID (klawiatura/gamepad/pilot multimedialny),
+- prawy **Zwift Click V2** przez bezpośrednie BLE/GATT.
+
+Dla Click V2 naciśnij przycisk, aby go wybudzić, a następnie wybierz **Znajdź i połącz Click V2**. Domyślne mapowanie to `+ -> Bieg +1` oraz `B -> Bieg -1`. Przyciski można zmienić przez wspólny tryb **Naucz Bieg +/−**.
+
+Pierwsza implementacja świadomie używa prawego kontrolera Click V2, który może działać bez okresowego odblokowywania przez Zwift.
+
+

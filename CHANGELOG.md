@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.0 — Zwift Click V2
+
+- dodano bezpośrednią obsługę BLE prawego **Zwift Click V2**, bez parowania jako HID,
+- dodano wykrywanie prawego Click V2 po danych producenta Zwift oraz serwisie BLE,
+- dodano połączenie z usługą Zwift Ride/Click i subskrypcję charakterystyk powiadomień,
+- dodano komendę startową dla Click V2 i dekodowanie komunikatów przycisków Ride (`0x23`),
+- obsługiwane przyciski prawego kontrolera: **A, B, Y, Z, +**,
+- domyślne mapowanie: **+ = Bieg +1**, **B = Bieg −1**,
+- tryb „Naucz Bieg +/−” działa wspólnie dla kontrolerów HID i Zwift Click V2,
+- mapowanie Click V2 jest zapisywane w `SharedPreferences`,
+- pojedyncze przytrzymanie przycisku generuje tylko jedną akcję zmiany biegu,
+- dodano przyciski skanowania/łączenia i rozłączania Click V2 na karcie **Kontroler**,
+- celowo obsługiwany jest prawy Click V2 (tryb niewymagający okresowego unlocku Zwift),
+- podniesiono wersję aplikacji do 0.6.0.
+
 ## 0.5.1 — poprawka kompilacji kontrolera
 
 - poprawiono pobieranie urządzeń z `InputManager.inputDeviceIds` (`IntArray`),

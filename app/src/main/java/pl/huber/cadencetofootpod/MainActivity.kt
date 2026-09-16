@@ -8,10 +8,14 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
+import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
@@ -41,7 +45,7 @@ class MainActivity : Activity(),
         private const val REQ_ENABLE_BT = 1002
     }
 
-    private enum class AppTab { CONNECTION, BIKE, POWER }
+    private enum class AppTab { CONNECTION, BIKE, POWER, CONTROLLER }
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
     private lateinit var scanner: CadenceSensorScanner
@@ -51,13 +55,16 @@ class MainActivity : Activity(),
     private lateinit var obcServer: OpenBikeControlServer
     private lateinit var autoShiftEngine: AutoShiftEngine
     private lateinit var powerTargetEngine: PowerTargetEngine
+    private lateinit var controllerKeyMapper: ControllerKeyMapper
 
     private lateinit var connectionContent: View
     private lateinit var bikeContent: View
     private lateinit var powerContent: View
+    private lateinit var controllerContent: View
     private lateinit var connectionTabButton: Button
     private lateinit var bikeTabButton: Button
     private lateinit var powerTabButton: Button
+    private lateinit var controllerTabButton: Button
 
     private lateinit var permissionsText: TextView
     private lateinit var cadenceStatusText: TextView
@@ -99,6 +106,12 @@ class MainActivity : Activity(),
     private lateinit var powerTargetStatusText: TextView
     private lateinit var powerObcText: TextView
 
+    private lateinit var controllerStatusText: TextView
+    private lateinit var controllerDevicesText: TextView
+    private lateinit var controllerShiftUpText: TextView
+    private lateinit var controllerShiftDownText: TextView
+    private lateinit var controllerLastKeyText: TextView
+
     private lateinit var logText: TextView
 
     private val foundDevices = mutableListOf<CadenceSensorScanner.FoundDevice>()
@@ -125,6 +138,7 @@ class MainActivity : Activity(),
             return
         }
         bluetoothAdapter = adapter
+        controllerKeyMapper = ControllerKeyMapper(this)
 
         buildUi()
 
@@ -194,22 +208,36 @@ class MainActivity : Activity(),
         }
         connectionTabButton = Button(this).apply {
             text = "Połączenie"
+            textSize = 12f
+            minWidth = 0
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { showTab(AppTab.CONNECTION) }
         }
         bikeTabButton = Button(this).apply {
             text = "Rower"
+            textSize = 12f
+            minWidth = 0
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { showTab(AppTab.BIKE) }
         }
         powerTabButton = Button(this).apply {
             text = "Moc"
+            textSize = 12f
+            minWidth = 0
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { showTab(AppTab.POWER) }
+        }
+        controllerTabButton = Button(this).apply {
+            text = "Kontroler"
+            textSize = 12f
+            minWidth = 0
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { showTab(AppTab.CONTROLLER) }
         }
         tabs.addView(connectionTabButton)
         tabs.addView(bikeTabButton)
         tabs.addView(powerTabButton)
+        tabs.addView(controllerTabButton)
         root.addView(tabs)
 
         val frame = FrameLayout(this).apply {
@@ -223,9 +251,11 @@ class MainActivity : Activity(),
         connectionContent = buildConnectionTab()
         bikeContent = buildBikeTab()
         powerContent = buildPowerTab()
+        controllerContent = buildControllerTab()
         frame.addView(connectionContent)
         frame.addView(bikeContent)
         frame.addView(powerContent)
+        frame.addView(controllerContent)
         root.addView(frame)
 
         setContentView(root)
@@ -691,13 +721,155 @@ class MainActivity : Activity(),
         return ScrollView(this).apply { addView(content) }
     }
 
+    private fun buildControllerTab(): View {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), 0, dp(4), dp(24))
+        }
+
+        addHeader(content, "Kontroler Bluetooth")
+        content.addView(TextView(this).apply {
+            text = "Obsługiwane są piloty i kontrolery, które Android widzi jako urządzenie HID: klawiaturę, gamepad, D-pad albo pilot multimedialny. Najpierw sparuj urządzenie w ustawieniach Bluetooth, a potem naucz aplikację dwóch przycisków."
+            textSize = 14f
+            setPadding(0, 0, 0, dp(8))
+        })
+
+        content.addView(Button(this).apply {
+            text = "Otwórz ustawienia Bluetooth / sparuj pilot"
+            setOnClickListener {
+                val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                if (intent.resolveActivity(packageManager) != null) {
+                    startActivity(intent)
+                } else {
+                    Toast.makeText(this@MainActivity, "Brak ekranu ustawień Bluetooth na tym urządzeniu.", Toast.LENGTH_LONG).show()
+                }
+            }
+        })
+
+        controllerDevicesText = sectionText("Aktywne kontrolery: sprawdzanie…")
+        content.addView(controllerDevicesText)
+        content.addView(Button(this).apply {
+            text = "Odśwież listę kontrolerów"
+            setOnClickListener { refreshControllerDevices() }
+        })
+
+        addHeader(content, "Mapowanie przycisków")
+        controllerShiftUpText = sectionText("Bieg +1: nieprzypisany")
+        controllerShiftDownText = sectionText("Bieg −1: nieprzypisany")
+        content.addView(controllerShiftUpText)
+        content.addView(controllerShiftDownText)
+
+        val learnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        learnRow.addView(Button(this).apply {
+            text = "Naucz Bieg −"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { beginControllerLearning(ControllerKeyMapper.Action.SHIFT_DOWN) }
+        })
+        learnRow.addView(Button(this).apply {
+            text = "Naucz Bieg +"
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener { beginControllerLearning(ControllerKeyMapper.Action.SHIFT_UP) }
+        })
+        content.addView(learnRow)
+
+        controllerStatusText = sectionText("Kontroler: gotowy")
+        controllerStatusText.gravity = Gravity.CENTER_HORIZONTAL
+        content.addView(controllerStatusText)
+
+        controllerLastKeyText = TextView(this).apply {
+            text = "Ostatni przycisk: —"
+            textSize = 14f
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        content.addView(controllerLastKeyText)
+
+        content.addView(Button(this).apply {
+            text = "Anuluj naukę"
+            setOnClickListener {
+                controllerKeyMapper.cancelLearning()
+                controllerStatusText.text = "Kontroler: gotowy"
+                controllerLastKeyText.text = "Ostatni przycisk: —"
+            }
+        })
+
+        content.addView(Button(this).apply {
+            text = "Usuń mapowanie przycisków"
+            setOnClickListener {
+                controllerKeyMapper.clearMappings()
+                refreshControllerMappings()
+                controllerStatusText.text = "Kontroler: mapowanie usunięte"
+                appendLog("KONTROLER: usunięto mapowanie przycisków.")
+            }
+        })
+
+        content.addView(TextView(this).apply {
+            text = "Mapowanie działa we wszystkich kartach aplikacji. Pierwsze naciśnięcie przypisanego przycisku uruchomi OpenBikeControl automatycznie, tak samo jak ręczne Bieg +/−."
+            textSize = 13f
+            setPadding(0, dp(8), 0, 0)
+        })
+
+        refreshControllerMappings()
+        refreshControllerDevices()
+
+        return ScrollView(this).apply { addView(content) }
+    }
+
+    private fun beginControllerLearning(action: ControllerKeyMapper.Action) {
+        controllerKeyMapper.beginLearning(action)
+        val label = if (action == ControllerKeyMapper.Action.SHIFT_UP) "Bieg +1" else "Bieg −1"
+        controllerStatusText.text = "Nauka: naciśnij na pilocie przycisk dla $label"
+        controllerLastKeyText.text = "Oczekiwanie na przycisk…"
+    }
+
+    private fun refreshControllerMappings() {
+        if (!::controllerShiftUpText.isInitialized) return
+        val up = controllerKeyMapper.getMapping(ControllerKeyMapper.Action.SHIFT_UP)
+        val down = controllerKeyMapper.getMapping(ControllerKeyMapper.Action.SHIFT_DOWN)
+        controllerShiftUpText.text = "Bieg +1: ${up?.displayLabel() ?: "nieprzypisany"}"
+        controllerShiftDownText.text = "Bieg −1: ${down?.displayLabel() ?: "nieprzypisany"}"
+    }
+
+    private fun refreshControllerDevices() {
+        if (!::controllerDevicesText.isInitialized) return
+        val inputManager = getSystemService(InputManager::class.java)
+        val devices: List<InputDevice> = inputManager.inputDeviceIds
+            .map { deviceId -> inputManager.getInputDevice(deviceId) }
+            .filterNotNull()
+            .filter { device ->
+                val isExternal = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || device.isExternal
+                !device.isVirtual && isExternal && (
+                    device.supportsSource(InputDevice.SOURCE_KEYBOARD) ||
+                        device.supportsSource(InputDevice.SOURCE_DPAD) ||
+                        device.supportsSource(InputDevice.SOURCE_GAMEPAD) ||
+                        device.supportsSource(InputDevice.SOURCE_JOYSTICK)
+                    )
+            }
+            .distinctBy { it.descriptor }
+
+        controllerDevicesText.text = if (devices.isEmpty()) {
+            "Aktywne kontrolery: brak. Sparuj pilot w Bluetooth i naciśnij na nim dowolny przycisk."
+        } else {
+            "Aktywne kontrolery (${devices.size}):\n" + devices.joinToString("\n") { "• ${it.name}" }
+        }
+    }
+
     private fun showTab(tab: AppTab) {
         connectionContent.visibility = if (tab == AppTab.CONNECTION) View.VISIBLE else View.GONE
         bikeContent.visibility = if (tab == AppTab.BIKE) View.VISIBLE else View.GONE
         powerContent.visibility = if (tab == AppTab.POWER) View.VISIBLE else View.GONE
+        controllerContent.visibility = if (tab == AppTab.CONTROLLER) View.VISIBLE else View.GONE
         connectionTabButton.isEnabled = tab != AppTab.CONNECTION
         bikeTabButton.isEnabled = tab != AppTab.BIKE
         powerTabButton.isEnabled = tab != AppTab.POWER
+        controllerTabButton.isEnabled = tab != AppTab.CONTROLLER
+        if (tab == AppTab.CONTROLLER) {
+            refreshControllerMappings()
+            refreshControllerDevices()
+        }
     }
 
     private fun addHeader(root: LinearLayout, textValue: String) {
@@ -989,7 +1161,10 @@ class MainActivity : Activity(),
         }
     }
 
-    private fun manualShift(direction: AutoShiftEngine.Direction) {
+    private fun manualShift(
+        direction: AutoShiftEngine.Direction,
+        source: String = "RĘCZNIE"
+    ) {
         ensureObcStarted()
         autoShiftEngine.registerManualShift()
         powerTargetEngine.registerManualShift()
@@ -998,7 +1173,7 @@ class MainActivity : Activity(),
             AutoShiftEngine.Direction.DOWN -> obcServer.shiftDown(1)
         }
         appendLog(
-            "RĘCZNIE: ${if (direction == AutoShiftEngine.Direction.UP) "Bieg +1" else "Bieg -1"}"
+            "$source: ${if (direction == AutoShiftEngine.Direction.UP) "Bieg +1" else "Bieg -1"}"
         )
     }
 
@@ -1215,6 +1390,48 @@ class MainActivity : Activity(),
         val current = logText.text?.toString().orEmpty()
         val newText = if (current.isBlank()) line else "$current\n$line"
         logText.text = newText.takeLast(20_000)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (::controllerKeyMapper.isInitialized) {
+            when (val result = controllerKeyMapper.handle(event)) {
+                is ControllerKeyMapper.HandleResult.Learned -> {
+                    val label = if (result.action == ControllerKeyMapper.Action.SHIFT_UP) "Bieg +1" else "Bieg −1"
+                    if (::controllerStatusText.isInitialized) {
+                        controllerStatusText.text = "Kontroler: zapisano $label"
+                        controllerLastKeyText.text = "Ostatni przycisk: ${result.mapping.displayLabel()} → $label"
+                        refreshControllerMappings()
+                        refreshControllerDevices()
+                    }
+                    appendLog("KONTROLER: ${result.mapping.displayLabel()} przypisano do $label.")
+                    return true
+                }
+
+                is ControllerKeyMapper.HandleResult.Triggered -> {
+                    val direction = if (result.action == ControllerKeyMapper.Action.SHIFT_UP) {
+                        AutoShiftEngine.Direction.UP
+                    } else {
+                        AutoShiftEngine.Direction.DOWN
+                    }
+                    val label = if (result.action == ControllerKeyMapper.Action.SHIFT_UP) "Bieg +1" else "Bieg −1"
+                    if (::controllerLastKeyText.isInitialized) {
+                        controllerLastKeyText.text = "Ostatni przycisk: ${result.mapping.displayLabel()} → $label"
+                        controllerStatusText.text = "Kontroler: aktywny"
+                    }
+                    manualShift(direction, source = "KONTROLER")
+                    return true
+                }
+
+                ControllerKeyMapper.HandleResult.Consumed -> return true
+                null -> Unit
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::controllerDevicesText.isInitialized) refreshControllerDevices()
     }
 
     override fun onDestroy() {

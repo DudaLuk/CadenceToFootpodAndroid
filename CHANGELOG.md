@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.1 — poprawka kompilacji kontrolera
+
+- poprawiono pobieranie urządzeń z `InputManager.inputDeviceIds` (`IntArray`),
+- dodano jawny typ `List<InputDevice>`, dzięki czemu Kotlin poprawnie rozpoznaje `isExternal`, `isVirtual`, `supportsSource` i `descriptor`,
+- bez zmian w sposobie mapowania przycisków i działania Bieg +/−.
+
+## 0.5.0 - 2026-09-16
+
+- dodano czwartą kartę **Kontroler**,
+- dodano obsługę pilotów i kontrolerów Bluetooth HID widocznych w Androidzie jako urządzenia wejściowe,
+- dodano otwieranie systemowych ustawień Bluetooth do parowania pilota,
+- dodano listę aktywnych zewnętrznych kontrolerów HID,
+- dodano tryb nauki przycisków **Bieg +1** i **Bieg −1**,
+- mapowanie zapisuje kod klawisza oraz descriptor konkretnego urządzenia w `SharedPreferences`,
+- mapowanie działa niezależnie od aktualnie otwartej karty aplikacji,
+- długie przytrzymanie przycisku nie powoduje wielokrotnej zmiany biegu,
+- przypisany klawisz jest przejmowany przez aplikację, aby nie wykonywać równolegle jego standardowej funkcji systemowej,
+- dodano możliwość anulowania nauki i wyczyszczenia mapowania,
+- podniesiono wersję aplikacji do 0.5.0.
+
 ## 0.4.0 - 2026-09-15
 
 - dodano trzecią kartę **Moc**,

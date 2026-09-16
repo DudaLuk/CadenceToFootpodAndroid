@@ -1,4 +1,4 @@
-# CadenceToFootpodAndroid 0.4.0
+# CadenceToFootpodAndroid 0.5.0
 
 Android bridge dla MyWhoosh:
 
@@ -7,7 +7,8 @@ Android bridge dla MyWhoosh:
 3. może wystawić kadencję jako BLE Running Speed and Cadence / Footpod (RSC 0x1814),
 4. wystawia kontroler OpenBikeControl po mDNS + TCP,
 5. automatycznie zmienia wirtualny bieg MyWhoosh na podstawie kadencji,
-6. ma tryb **Power Target**, który dobiera przełożenia tak, aby dążyć do zadanej mocy i kadencji.
+6. ma tryb **Power Target**, który dobiera przełożenia tak, aby dążyć do zadanej mocy i kadencji,
+7. obsługuje zewnętrzny pilot / kontroler Bluetooth HID z mapowaniem przycisków na **Bieg +1 / Bieg −1**.
 
 ## Karty aplikacji
 
@@ -80,6 +81,22 @@ Moc jest wygładzana filtrem wykładniczym, a regulator zmienia tylko jeden bieg
 
 Tryby **AutoShift kadencji** i **Power Target** są wzajemnie wykluczające się — włączenie jednego wyłącza drugi.
 
+### Kontroler
+
+Karta **Kontroler** służy do obsługi zewnętrznego pilota Bluetooth działającego w Androidzie jako urządzenie HID (np. klawiatura, pilot multimedialny, D-pad lub gamepad).
+
+Konfiguracja:
+
+1. wybierz **Otwórz ustawienia Bluetooth / sparuj pilot**,
+2. sparuj i połącz pilot z Androidem,
+3. wróć do aplikacji i sprawdź, czy pojawił się na liście aktywnych kontrolerów,
+4. wybierz **Naucz Bieg +** i naciśnij wybrany przycisk na pilocie,
+5. wybierz **Naucz Bieg −** i naciśnij drugi przycisk.
+
+Mapowanie jest zapisywane w `SharedPreferences` i działa na wszystkich kartach aplikacji. Zapisywany jest kod klawisza oraz descriptor urządzenia, dlatego przycisk o tym samym kodzie z innego urządzenia nie powinien wywołać zmiany biegu. Przytrzymanie przycisku nie generuje serii zmian — jedna fizyczna akcja daje jedną zmianę biegu.
+
+> Kontroler musi być widziany przez Android jako urządzenie wejściowe HID. Piloty BLE korzystające z własnego, niestandardowego protokołu GATT wymagają osobnej obsługi konkretnego modelu/protokołu.
+
 ## Footpod
 
 Po połączeniu źródła kadencji można uruchomić **Wirtualny Footpod**. Aplikacja wystawia RSC `0x1814` i przesyła kadencję oraz emulowaną prędkość.
@@ -97,7 +114,7 @@ Aplikacja reklamuje `_openbikecontrol._tcp` i wysyła:
 01 02 00  Shift Down released
 ```
 
-## Zalecany test 0.4.0
+## Zalecany test 0.5.0
 
 1. Połącz KICKR CORE 2 i rozpocznij pedałowanie.
 2. Sprawdź, czy karta **Moc** pokazuje aktualne `W` oraz `RPM`.
@@ -106,7 +123,9 @@ Aplikacja reklamuje `_openbikecontrol._tcp` i wysyła:
 5. Ustaw np. `150 W`, `85 RPM`, histerezę `±10 W / ±5 RPM`.
 6. Włącz **Target mocy**.
 7. Obserwuj status regulatora i log zmian biegów.
-8. Po potwierdzeniu działania stopniowo zawężaj histerezę lub skracaj cooldown.
+8. Przejdź do karty **Kontroler**, sparuj pilot Bluetooth HID i przypisz dwa przyciski.
+9. Sprawdź, czy przycisk pilota wykonuje **Bieg +1 / Bieg −1** także po przejściu na kartę Rower lub Moc.
+10. Po potwierdzeniu działania stopniowo zawężaj histerezę lub skracaj cooldown.
 
 ## Wymagania
 
